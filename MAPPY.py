@@ -169,6 +169,46 @@ class TestState(State):
     """A State used only by the unit tests (it is never saved to disk)."""
 
 
+# ---------------------------------------------------------- flag file checker
+# Integrated from Check_flags.py. Run automatically when MAPPY starts.
+def code_names() -> list[str]:
+    """Return every country name listed in COUNTRY_REGIONS."""
+    return [name for names in COUNTRY_REGIONS.values() for name in names]
+
+
+def file_names() -> list[str]:
+    """Return PNG filenames without extensions from the MAPS folder."""
+    if os is None:
+        return []
+    here = os.path.dirname(os.path.abspath(__file__))
+    maps_folder = os.path.join(here, MAPS_FOLDER)
+    try:
+        return [name[:-4] for name in os.listdir(maps_folder)
+                if name.lower().endswith(".png")]
+    except OSError:
+        print("Flag check: MAPS folder is unavailable.")
+        return []
+
+
+def check_flags() -> None:
+    """Check local PNG filenames without preventing the website from starting."""
+    try:
+        if os is None:
+            print("Flag check skipped: filesystem access is unavailable.")
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        maps_folder = os.path.join(here, MAPS_FOLDER)
+        if not os.path.isdir(maps_folder):
+            print("Flag check skipped: MAPS folder not found.")
+            return
+        in_code = set(code_names())
+        on_disk = set(file_names())
+        print("In the code but NO file:", sorted(in_code - on_disk))
+        print("File exists but NOT in the code:", sorted(on_disk - in_code))
+    except Exception as error:
+        print("Flag check skipped:", error)
+
+
 # ------------------------------------------------------- saving / restoring
 # ADVANCED TECHNIQUE (not covered in class): after every page the progress is
 # written to a small JSON file in the computer's temp folder. If the browser
@@ -887,4 +927,6 @@ set_site_information(
 # Debug info is left ON while testing so any error message is visible.
 # Put hide_debug_information() back before you submit.
 # hide_debug_information()
+# Checking files is optional and must never stop the quiz website.
+check_flags()
 start_server(new_state())
