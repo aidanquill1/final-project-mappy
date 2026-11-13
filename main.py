@@ -1,30 +1,38 @@
 """MAPPY: a flag quiz website built with Drafter."""
+import base64
 import random
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from drafter import *
 
+try:
+    import os
+except ImportError:  # some browser-based Python versions have no os module
+    os = None
+try:
+    import json
+    import tempfile
+except ImportError:
+    json = None
+    tempfile = None
 try:
     from bakery import assert_equal
 except ImportError:  # unit tests are optional at runtime
     assert_equal = None
 
 # ---------------------------------------------------------------- constants
-# To use the downloaded Hugging Face dataset instead of flagcdn, put the
-# images in a "flags" folder named by lowercase code (fr.png) and change this.
-FLAG_URL = "https://flagcdn.com/w320/{code}.png"
-REGION_KEYS = {
-    "africa": "Africa",
-    "asia": "Asia",
-    "europe": "Europe",
-    "north_america": "North America",
-    "south_america": "South America",
-    "oceania": "Oceania",
-}
+# The flag images live in the MAPS folder next to MAPPY.py (Vietnam.png, ...).
+MAPS_FOLDER = "MAPS"
+REGION_NAMES = ["Africa", "Asia", "Europe", "North America", "South America",
+                "Oceania"]
 GREEN = "#2e9e4f"
 RED = "#d64545"
+GREY = "#cfcbc4"
 BORDER = "3px solid black"
 PAGE_COLOR = "#EAE7E2"
+COUNT_CHOICES = [("All", 0), ("100", 100), ("50", 50), ("10", 10)]
+CHOICE_COUNTS = ["4", "3", "2"]
+SAVE_FILE = "mappy_save.json"
 # Expand icon (64x64 PNG) embedded as base64 so it works once deployed.
 EXPAND_ICON = (
     "url(data:image/png;base64,"
@@ -47,87 +55,89 @@ EXPAND_ICON = (
     "TkSuQmCC"
     ")"
 )
-COUNT_CHOICES = [("call", "All", 0), ("c100", "100", 100),
-                 ("c50", "50", 50), ("c10", "10", 10)]
+
+# Every country, grouped by region. Names must match the PNG file names
+# in the MAPS folder exactly (run check_flags.py to find mismatches).
+COUNTRY_REGIONS = {
+    "Africa": [
+        "Algeria", "Angola", "Benin", "Botswana", "Burkina Faso", "Burundi", "Cameroon",
+        "Cape Verde", "Central African Republic", "Chad", "Comoros",
+        "Democratic Republic of the Congo", "Republic of the Congo", "Djibouti", "Egypt",
+        "Equatorial Guinea", "Eritrea", "Eswatini", "Ethiopia", "Gabon", "Gambia", "Ghana",
+        "Guinea", "Guinea-Bissau", "Ivory Coast", "Kenya", "Lesotho", "Liberia", "Libya",
+        "Madagascar", "Malawi", "Mali", "Mauritania", "Mauritius", "Morocco", "Mozambique",
+        "Namibia", "Niger", "Nigeria", "Rwanda", "Sao Tome and Principe", "Senegal", "Seychelles",
+        "Sierra Leone", "Somalia", "South Africa", "South Sudan", "Sudan", "Tanzania", "Togo",
+        "Tunisia", "Uganda", "Zambia", "Zimbabwe",
+    ],
+    "Asia": [
+        "Afghanistan", "Armenia", "Azerbaijan", "Bahrain", "Bangladesh", "Bhutan", "Brunei",
+        "Cambodia", "China", "Georgia", "India", "Indonesia", "Iran", "Iraq", "Israel", "Japan",
+        "Jordan", "Kazakhstan", "Kuwait", "Kyrgyzstan", "Laos", "Lebanon", "Malaysia", "Maldives",
+        "Mongolia", "Myanmar", "Nepal", "North Korea", "Oman", "Pakistan", "Palestine",
+        "Philippines", "Qatar", "Saudi Arabia", "Singapore", "South Korea", "Sri Lanka", "Syria",
+        "Taiwan", "Tajikistan", "Thailand", "Timor-Leste", "Turkey", "Turkmenistan",
+        "United Arab Emirates", "Uzbekistan", "Vietnam", "Yemen",
+    ],
+    "Europe": [
+        "Albania", "Andorra", "Austria", "Belarus", "Belgium", "Bosnia and Herzegovina", "Bulgaria",
+        "Croatia", "Cyprus", "Czech Republic", "Denmark", "Estonia", "Finland", "France", "Germany",
+        "Greece", "Hungary", "Iceland", "Ireland", "Italy", "Kosovo", "Latvia", "Liechtenstein",
+        "Lithuania", "Luxembourg", "Malta", "Moldova", "Monaco", "Montenegro", "Netherlands",
+        "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "Russia", "San Marino",
+        "Serbia", "Slovakia", "Slovenia", "Spain", "Sweden", "Switzerland", "Ukraine",
+        "United Kingdom", "Vatican City",
+    ],
+    "North America": [
+        "Antigua and Barbuda", "Bahamas", "Barbados", "Belize", "Canada", "Costa Rica", "Cuba",
+        "Dominica", "Dominican Republic", "El Salvador", "Grenada", "Guatemala", "Haiti",
+        "Honduras", "Jamaica", "Mexico", "Nicaragua", "Panama", "Saint Kitts and Nevis",
+        "Saint Lucia", "Saint Vincent and the Grenadines", "Trinidad and Tobago", "United States",
+    ],
+    "South America": [
+        "Argentina", "Bolivia", "Brazil", "Chile", "Colombia", "Ecuador", "Guyana", "Paraguay",
+        "Peru", "Suriname", "Uruguay", "Venezuela",
+    ],
+    "Oceania": [
+        "Australia", "Fiji", "Kiribati", "Marshall Islands", "Micronesia", "Nauru", "New Zealand",
+        "Palau", "Papua New Guinea", "Samoa", "Solomon Islands", "Tonga", "Tuvalu", "Vanuatu",
+    ],
+}
 
 
 @dataclass
 class Country:
-    """A country with its region and two-letter flag code."""
+    """A country: its flag image file, its name, and its region."""
+    image: str
     name: str
     region: str
-    code: str
 
 
 @dataclass
 class Question:
-    """One quiz question: the correct flag code and four answer choices.
-    Only the short code is stored to keep the saved state small."""
-    code: str
+    """One quiz question: the correct country name and its choices.
+    Only the name is stored to keep the saved state small."""
+    name: str
     choices: list[str]
 
 
 @dataclass
 class Missed:
-    """A wrongly answered question (flag code) and what was picked."""
-    code: str
+    """A wrongly answered question (country name) and what was picked."""
+    name: str
     said: str
 
 
-COUNTRIES: list[Country] = [
-    Country("Egypt", "Africa", "eg"), Country("Nigeria", "Africa", "ng"),
-    Country("Kenya", "Africa", "ke"), Country("South Africa", "Africa", "za"),
-    Country("Morocco", "Africa", "ma"), Country("Ethiopia", "Africa", "et"),
-    Country("Ghana", "Africa", "gh"), Country("Algeria", "Africa", "dz"),
-    Country("Tanzania", "Africa", "tz"), Country("Senegal", "Africa", "sn"),
-    Country("Uganda", "Africa", "ug"), Country("Tunisia", "Africa", "tn"),
-    Country("Japan", "Asia", "jp"), Country("China", "Asia", "cn"),
-    Country("India", "Asia", "in"), Country("South Korea", "Asia", "kr"),
-    Country("Thailand", "Asia", "th"), Country("Vietnam", "Asia", "vn"),
-    Country("Indonesia", "Asia", "id"), Country("Philippines", "Asia", "ph"),
-    Country("Pakistan", "Asia", "pk"), Country("Saudi Arabia", "Asia", "sa"),
-    Country("Turkey", "Asia", "tr"), Country("Nepal", "Asia", "np"),
-    Country("France", "Europe", "fr"), Country("Germany", "Europe", "de"),
-    Country("Italy", "Europe", "it"), Country("Spain", "Europe", "es"),
-    Country("Portugal", "Europe", "pt"), Country("Ireland", "Europe", "ie"),
-    Country("Poland", "Europe", "pl"), Country("Sweden", "Europe", "se"),
-    Country("Norway", "Europe", "no"), Country("Greece", "Europe", "gr"),
-    Country("Netherlands", "Europe", "nl"),
-    Country("Switzerland", "Europe", "ch"),
-    Country("United States", "North America", "us"),
-    Country("Canada", "North America", "ca"),
-    Country("Mexico", "North America", "mx"),
-    Country("Cuba", "North America", "cu"),
-    Country("Jamaica", "North America", "jm"),
-    Country("Costa Rica", "North America", "cr"),
-    Country("Panama", "North America", "pa"),
-    Country("Guatemala", "North America", "gt"),
-    Country("Haiti", "North America", "ht"),
-    Country("Honduras", "North America", "hn"),
-    Country("Bahamas", "North America", "bs"),
-    Country("Dominican Republic", "North America", "do"),
-    Country("Brazil", "South America", "br"),
-    Country("Argentina", "South America", "ar"),
-    Country("Chile", "South America", "cl"),
-    Country("Peru", "South America", "pe"),
-    Country("Colombia", "South America", "co"),
-    Country("Venezuela", "South America", "ve"),
-    Country("Ecuador", "South America", "ec"),
-    Country("Bolivia", "South America", "bo"),
-    Country("Uruguay", "South America", "uy"),
-    Country("Paraguay", "South America", "py"),
-    Country("Guyana", "South America", "gy"),
-    Country("Suriname", "South America", "sr"),
-    Country("Australia", "Oceania", "au"),
-    Country("New Zealand", "Oceania", "nz"),
-    Country("Fiji", "Oceania", "fj"),
-    Country("Papua New Guinea", "Oceania", "pg"),
-    Country("Samoa", "Oceania", "ws"), Country("Tonga", "Oceania", "to"),
-    Country("Vanuatu", "Oceania", "vu"),
-    Country("Solomon Islands", "Oceania", "sb"),
-    Country("Palau", "Oceania", "pw"), Country("Kiribati", "Oceania", "ki"),
-    Country("Tuvalu", "Oceania", "tv"), Country("Nauru", "Oceania", "nr"),
-]
+def load_countries() -> list[Country]:
+    """Build a Country (image path, name, region) for every country."""
+    countries = []
+    for region, names in COUNTRY_REGIONS.items():
+        for name in names:
+            countries.append(Country(f"{MAPS_FOLDER}/{name}.png", name, region))
+    return countries
+
+
+COUNTRIES: list[Country] = load_countries()
 
 
 @dataclass
@@ -142,64 +152,126 @@ class State:
     missed: list[Missed]
     regions: list[str]
     flag_count: int  # 0 means "all flags"
+    hard_mode: bool
+    num_choices: int
+    fullscreen: bool  # True while the full screen options page is open
+
+
+def new_state() -> State:
+    """Return the starting state of the website."""
+    return State([], 0, 0, 0, False, "", [], list(REGION_NAMES), 0, False, 4,
+                 False)
+
+
+@dataclass
+class TestState(State):
+    """A State used only by the unit tests (it is never saved to disk)."""
+
+
+# ------------------------------------------------------- saving / restoring
+# ADVANCED TECHNIQUE (not covered in class): after every page the progress is
+# written to a small JSON file in the computer's temp folder. If the browser
+# page ever refreshes and Drafter hands us a brand new state, the next route
+# loads the saved progress back so the quiz and settings are not lost.
+# If files are unavailable (e.g. after deploying) these functions do nothing.
+def save_path() -> str:
+    """Return where the progress file is kept."""
+    return os.path.join(tempfile.gettempdir(), SAVE_FILE)
+
+
+def save_progress(state: State) -> None:
+    """Write the state to the progress file (ignored for unit tests)."""
+    if type(state) is not State:
+        return
+    try:
+        with open(save_path(), "w", encoding="utf-8") as file:
+            json.dump(asdict(state), file)
+    except (OSError, NameError, AttributeError, TypeError):
+        pass
+
+
+def fill_state(state: State, data: dict) -> None:
+    """Copy saved data into the state."""
+    state.quiz = [Question(q["name"], list(q["choices"]))
+                  for q in data["quiz"]]
+    state.missed = [Missed(m["name"], m["said"]) for m in data["missed"]]
+    state.regions = list(data["regions"])
+    state.position = data["position"]
+    state.score = data["score"]
+    state.streak = data["streak"]
+    state.answered = data["answered"]
+    state.picked = data["picked"]
+    state.flag_count = data["flag_count"]
+    state.hard_mode = data["hard_mode"]
+    state.num_choices = data["num_choices"]
+    state.fullscreen = data["fullscreen"]
+
+
+def restore_progress(state: State) -> None:
+    """If the state was reset to brand new, load the saved progress."""
+    if state != new_state():
+        return
+    try:
+        with open(save_path(), encoding="utf-8") as file:
+            fill_state(state, json.load(file))
+    except (OSError, ValueError, KeyError, TypeError, NameError,
+            AttributeError):
+        pass
 
 
 # ------------------------------------------------------------ helper logic
-def collect_regions(africa: bool, asia: bool, europe: bool,
-                    north_america: bool, south_america: bool,
-                    oceania: bool) -> list[str]:
-    """Return the region names whose checkboxes are ticked."""
-    ticked = {"africa": africa, "asia": asia, "europe": europe,
-              "north_america": north_america,
-              "south_america": south_america, "oceania": oceania}
-    chosen = []
-    for key, is_ticked in ticked.items():
-        if is_ticked:
-            chosen.append(REGION_KEYS[key])
-    return chosen
-
-
-def pick_count(c10: bool, c50: bool, c100: bool, call: bool) -> int:
-    """Return the largest ticked flag count (0 = all, default 10)."""
-    if call:
-        return 0
-    if c100:
-        return 100
-    if c50:
-        return 50
-    return 10
-
-
 def build_pool(regions: list[str]) -> list[Country]:
-    """Return all countries in the given regions (all if too few)."""
+    """Return all countries in the given regions (all if none given)."""
     pool = [country for country in COUNTRIES if country.region in regions]
     if len(pool) < 4:
         return list(COUNTRIES)
     return pool
 
 
-def find_country(code: str) -> Country:
-    """Return the country with the given flag code."""
+def count_available(regions: list[str], amount: int) -> bool:
+    """Return True if the regions hold enough flags for this count."""
+    return amount == 0 or amount <= len(build_pool(regions))
+
+
+def fix_count(state: State) -> None:
+    """Switch to 'All' if the chosen count no longer fits the regions."""
+    if not count_available(state.regions, state.flag_count):
+        state.flag_count = 0
+
+
+def apply_extras(state: State, hard_mode: bool, num_choices: str) -> None:
+    """Store the hard mode box and the choices drop-down."""
+    state.hard_mode = hard_mode
+    state.num_choices = int(num_choices) if num_choices in CHOICE_COUNTS else 4
+
+
+def find_country(name: str) -> Country:
+    """Return the Country with the given name."""
     for country in COUNTRIES:
-        if country.code == code:
+        if country.name == name:
             return country
     return COUNTRIES[0]
 
 
-def make_question(country: Country, pool: list[Country]) -> Question:
-    """Build a question with the answer plus 3 random wrong choices.
+def make_question(country: Country, pool: list[Country],
+                  num_choices: int) -> Question:
+    """Build a question with the answer plus random wrong choices.
     Not unit tested because of randomization."""
     others = [other.name for other in pool if other.name != country.name]
-    choices = random.sample(others, 3) + [country.name]
+    choices = random.sample(others, min(num_choices - 1, len(others)))
+    choices.append(country.name)
     random.shuffle(choices)
-    return Question(country.code, choices)
+    return Question(country.name, choices)
 
 
-def make_quiz(pool: list[Country], flag_count: int) -> list[Question]:
-    """Build a shuffled quiz of flag_count questions (0 = whole pool)."""
-    total = len(pool) if flag_count == 0 else min(flag_count, len(pool))
-    chosen = random.sample(pool, total)
-    return [make_question(country, pool) for country in chosen]
+def new_quiz(state: State) -> list[Question]:
+    """Build a shuffled quiz from the chosen regions and flag count."""
+    pool = build_pool(state.regions)
+    wrong_pool = list(COUNTRIES) if state.hard_mode else pool
+    total = len(pool) if state.flag_count == 0 else state.flag_count
+    chosen = random.sample(pool, min(total, len(pool)))
+    return [make_question(country, wrong_pool, state.num_choices)
+            for country in chosen]
 
 
 def reset_game(state: State, quiz: list[Question]) -> None:
@@ -224,10 +296,25 @@ def colored(text: str, color: str) -> str:
 
 
 # ------------------------------------------------------- styled components
-def flag_image(code: str, height: int) -> Image:
+def flag_source(image: str) -> str:
+    """Return the flag as an embedded data URI, found relative to this file.
+    ADVANCED TECHNIQUE (not covered in class): the PNG is read and encoded
+    with base64 so the browser gets the picture itself and does not depend
+    on the folder Drafter happens to be running from. If the file cannot be
+    read (e.g. after deploying), the plain relative path is used instead."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, image), "rb") as file:
+            encoded = base64.b64encode(file.read()).decode("ascii")
+        return "data:image/png;base64," + encoded
+    except (OSError, NameError, AttributeError):
+        return image
+
+
+def flag_image(image: str, height: int) -> Image:
     """Return the flag image at a fixed height, so the page never jumps
     around while images load (bordered through the site CSS)."""
-    return Image(FLAG_URL.format(code=code), height=height)
+    return Image(flag_source(image), height=height)
 
 
 def expand_button() -> Button:
@@ -249,6 +336,28 @@ def styled_button(text: str, route_fn, color: str = "white") -> Button:
                   style_font_size="20px")
 
 
+def choice_button(text: str, route_fn, selected: bool,
+                  available: bool) -> Button:
+    """Return an option button: green when selected, and grey and crossed
+    out with a 'Not Available' tooltip when it cannot be chosen."""
+    style = {"style_border": BORDER, "style_border_radius": "15px",
+             "style_padding": "6px 16px", "style_font_size": "16px",
+             "style_background_color": "white", "style_color": "black"}
+    if selected:
+        style["style_background_color"] = GREEN
+        style["style_color"] = "white"
+    if not available:
+        style["style_background_color"] = GREY
+        style["style_color"] = "#8a8a8a"
+        style["style_text_decoration"] = "line-through"
+        style["style_cursor"] = "not-allowed"
+        try:
+            return Button(text, route_fn, title="Not Available", **style)
+        except TypeError:  # this Drafter version has no tooltip support
+            pass
+    return Button(text, route_fn, **style)
+
+
 def panel(*content, **style) -> Div:
     """Return a bordered box around the content."""
     return Div(*content, style_border=BORDER, style_padding="20px",
@@ -260,82 +369,243 @@ def checkbox_row(name: str, label: str, ticked: bool) -> Div:
     return Div(CheckBox(name, ticked), Span(" " + label))
 
 
+def button_row(*buttons) -> Div:
+    """Lay buttons out side by side, wrapping onto new lines."""
+    return Div(*buttons, style_display="flex", style_flex_wrap="wrap",
+               style_gap="8px", style_padding="6px 0px")
+
+
 def options_panel(state: State, show_expand: bool) -> Div:
-    """Build the bordered options box with region and count checkboxes."""
+    """Build the bordered options box."""
     title = Header("Options", 3)
     if show_expand:
         title = Div(title, expand_button(), style_display="flex",
                     style_justify_content="space-between",
                     style_align_items="center")
-    parts = [title, Text("Regions")]
-    for key, region in REGION_KEYS.items():
-        parts.append(checkbox_row(key, region, region in state.regions))
-    parts.append(Text("Number of flags"))
-    for name, label, amount in COUNT_CHOICES:
-        parts.append(checkbox_row(name, label, state.flag_count == amount))
-    return panel(*parts)
+    region_routes = [toggle_africa, toggle_asia, toggle_europe,
+                     toggle_north_america, toggle_south_america,
+                     toggle_oceania]
+    region_buttons = []
+    for name, route_fn in zip(REGION_NAMES, region_routes):
+        region_buttons.append(
+            choice_button(name, route_fn, name in state.regions, True))
+    count_routes = [set_count_all, set_count_100, set_count_50, set_count_10]
+    count_buttons = []
+    for (label, amount), route_fn in zip(COUNT_CHOICES, count_routes):
+        count_buttons.append(choice_button(
+            label, route_fn, state.flag_count == amount,
+            count_available(state.regions, amount)))
+    total = len(build_pool(state.regions))
+    return panel(title, Text("Regions"), button_row(*region_buttons),
+                 Text(f"Number of flags ({total} available)"),
+                 button_row(*count_buttons),
+                 checkbox_row("hard_mode",
+                              "Hard mode: wrong answers from any region",
+                              state.hard_mode),
+                 Text("Answer choices"),
+                 SelectBox("num_choices", CHOICE_COUNTS,
+                           str(state.num_choices)))
 
 
-def save_choices(state: State, africa: bool, asia: bool, europe: bool,
-                 north_america: bool, south_america: bool, oceania: bool,
-                 c10: bool, c50: bool, c100: bool, call: bool) -> None:
-    """Store the ticked options in the state."""
-    state.regions = collect_regions(africa, asia, europe, north_america,
-                                    south_america, oceania)
-    state.flag_count = pick_count(c10, c50, c100, call)
-
-
-# ------------------------------------------------------------------ routes
-@route
-def index(state: State) -> Page:
-    """Home page with title, PLAY button, and options on the right."""
+# ------------------------------------------------------------------- pages
+def home_page(state: State) -> Page:
+    """Build the home page (title, PLAY button, options on the right)."""
     left = Div(Header("MAPPY", 1), LineBreak(), LineBreak(),
                styled_button("PLAY", start_game), style_width="55%")
     right = Div(options_panel(state, True), style_width="40%")
+    save_progress(state)
     return Page(state, [panel(Div(left, right, style_display="flex",
                                   style_justify_content="space-between"))])
 
 
-@route
-def open_options(state: State, africa: bool, asia: bool, europe: bool,
-                 north_america: bool, south_america: bool, oceania: bool,
-                 c10: bool, c50: bool, c100: bool, call: bool) -> Page:
-    """Full screen options page."""
-    save_choices(state, africa, asia, europe, north_america, south_america,
-                 oceania, c10, c50, c100, call)
+def options_page(state: State) -> Page:
+    """Build the full screen options page."""
+    save_progress(state)
     return Page(state, [panel(Header("MAPPY Options", 1),
                               options_panel(state, False),
-                              styled_button("SAVE & BACK", index))])
+                              LineBreak(),
+                              styled_button("SAVE & BACK", close_options))])
+
+
+def options_view(state: State) -> Page:
+    """Show whichever options screen is currently open."""
+    if state.fullscreen:
+        return options_page(state)
+    return home_page(state)
+
+
+# ------------------------------------------------------------ option routes
+@route
+def index(state: State) -> Page:
+    """Home page. If a quiz is still in progress (the page was refreshed),
+    go straight back to it instead of showing the home page."""
+    restore_progress(state)
+    state.fullscreen = False
+    if len(state.quiz) > 0:
+        return question(state)
+    return home_page(state)
 
 
 @route
-def start_game(state: State, africa: bool, asia: bool, europe: bool,
-               north_america: bool, south_america: bool, oceania: bool,
-               c10: bool, c50: bool, c100: bool, call: bool) -> Page:
-    """Save options, build a quiz, and show the first question."""
-    save_choices(state, africa, asia, europe, north_america, south_america,
-                 oceania, c10, c50, c100, call)
-    pool = build_pool(state.regions)
-    reset_game(state, make_quiz(pool, state.flag_count))
+def open_options(state: State, hard_mode: bool,
+                 num_choices: str) -> Page:
+    """Open the full screen options page."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    state.fullscreen = True
+    return options_page(state)
+
+
+@route
+def close_options(state: State, hard_mode: bool,
+                  num_choices: str) -> Page:
+    """Leave the full screen options page."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    state.fullscreen = False
+    return home_page(state)
+
+
+def toggle_region(state: State, region: str) -> Page:
+    """Tick or untick a region (at least one stays ticked)."""
+    chosen = list(state.regions)
+    if region in chosen:
+        if len(chosen) > 1:
+            chosen.remove(region)
+    else:
+        chosen.append(region)
+    state.regions = [name for name in REGION_NAMES if name in chosen]
+    fix_count(state)
+    return options_view(state)
+
+
+@route
+def toggle_africa(state: State, hard_mode: bool,
+                  num_choices: str) -> Page:
+    """Tick or untick Africa."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return toggle_region(state, "Africa")
+
+
+@route
+def toggle_asia(state: State, hard_mode: bool,
+                num_choices: str) -> Page:
+    """Tick or untick Asia."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return toggle_region(state, "Asia")
+
+
+@route
+def toggle_europe(state: State, hard_mode: bool,
+                  num_choices: str) -> Page:
+    """Tick or untick Europe."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return toggle_region(state, "Europe")
+
+
+@route
+def toggle_north_america(state: State, hard_mode: bool,
+                         num_choices: str) -> Page:
+    """Tick or untick North America."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return toggle_region(state, "North America")
+
+
+@route
+def toggle_south_america(state: State, hard_mode: bool,
+                         num_choices: str) -> Page:
+    """Tick or untick South America."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return toggle_region(state, "South America")
+
+
+@route
+def toggle_oceania(state: State, hard_mode: bool,
+                   num_choices: str) -> Page:
+    """Tick or untick Oceania."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return toggle_region(state, "Oceania")
+
+
+def pick_count(state: State, amount: int) -> Page:
+    """Choose how many flags (ignored if the regions hold too few)."""
+    if count_available(state.regions, amount):
+        state.flag_count = amount
+    return options_view(state)
+
+
+@route
+def set_count_all(state: State, hard_mode: bool,
+                  num_choices: str) -> Page:
+    """Use every flag in the chosen regions."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return pick_count(state, 0)
+
+
+@route
+def set_count_100(state: State, hard_mode: bool,
+                  num_choices: str) -> Page:
+    """Use 100 flags."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return pick_count(state, 100)
+
+
+@route
+def set_count_50(state: State, hard_mode: bool,
+                 num_choices: str) -> Page:
+    """Use 50 flags."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return pick_count(state, 50)
+
+
+@route
+def set_count_10(state: State, hard_mode: bool,
+                 num_choices: str) -> Page:
+    """Use 10 flags."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    return pick_count(state, 10)
+
+
+# ------------------------------------------------------------- quiz routes
+@route
+def start_game(state: State, hard_mode: bool,
+               num_choices: str) -> Page:
+    """Build a quiz from the options and show the first question."""
+    restore_progress(state)
+    apply_extras(state, hard_mode, num_choices)
+    state.fullscreen = False
+    reset_game(state, new_quiz(state))
     return question(state)
 
 
 @route
 def try_again(state: State) -> Page:
     """Rebuild a quiz with the same options."""
-    pool = build_pool(state.regions)
-    reset_game(state, make_quiz(pool, state.flag_count))
+    restore_progress(state)
+    reset_game(state, new_quiz(state))
     return question(state)
 
 
 @route
 def study_missed(state: State) -> Page:
     """Quiz only on the flags that were missed."""
+    restore_progress(state)
     if len(state.missed) == 0:
         return results(state)
-    regions = [find_country(missed.code).region for missed in state.missed]
-    pool = build_pool(regions)
-    redo = [make_question(find_country(missed.code), pool) for missed in state.missed]
+    pool = build_pool(state.regions)
+    wrong_pool = list(COUNTRIES) if state.hard_mode else pool
+    redo = [make_question(find_country(missed.name), wrong_pool,
+                          state.num_choices) for missed in state.missed]
     reset_game(state, redo)
     return question(state)
 
@@ -344,16 +614,16 @@ def answer_button(state: State, text: str, route_fn) -> Button:
     """Make an answer button, green/red once the question is answered."""
     if not state.answered:
         return styled_button(text, route_fn)
-    correct = find_country(state.quiz[state.position].code).name
-    color = GREEN if text == correct else RED
+    color = GREEN if text == state.quiz[state.position].name else RED
     return styled_button(text, route_fn, color)
 
 
 @route
 def question(state: State) -> Page:
-    """Show the current flag and its four answer choices."""
+    """Show the current flag and its answer choices."""
+    restore_progress(state)
     if len(state.quiz) == 0:
-        return index(state)
+        return home_page(state)
     current = state.quiz[state.position]
     total = len(state.quiz)
     top = Div(Text(f"Streak = {state.streak} 🔥"),
@@ -373,24 +643,26 @@ def question(state: State) -> Page:
         next_part = styled_button(label, next_question)
     bottom = Div(styled_button("QUIT", quit_game), next_part,
                  style_display="flex", style_justify_content="space-between")
-    flag = Div(flag_image(current.code, 200),
+    flag = Div(flag_image(find_country(current.name).image, 200),
                style_text_align="center", style_padding="20px")
+    save_progress(state)
     return Page(state, [panel(top, flag, grid, LineBreak(), bottom)])
 
 
 def record_answer(state: State, index_chosen: int) -> Page:
     """Grade the chosen answer and update score, streak, and misses."""
-    current = state.quiz[state.position]
-    if state.answered:
+    restore_progress(state)
+    if len(state.quiz) == 0 or state.answered:
         return question(state)
+    current = state.quiz[state.position]
     state.picked = current.choices[index_chosen]
     state.answered = True
-    if state.picked == find_country(current.code).name:
+    if state.picked == current.name:
         state.score += 1
         state.streak += 1
     else:
         state.streak = 0
-        state.missed.append(Missed(current.code, state.picked))
+        state.missed.append(Missed(current.name, state.picked))
     return question(state)
 
 
@@ -421,6 +693,7 @@ def choose_3(state: State) -> Page:
 @route
 def next_question(state: State) -> Page:
     """Go to the next question, or to the results after the last one."""
+    restore_progress(state)
     if not state.answered:  # ignore stray or double clicks
         return question(state)
     if is_last_question(state):
@@ -434,6 +707,7 @@ def next_question(state: State) -> Page:
 @route
 def quit_game(state: State) -> Page:
     """Ask for confirmation so a stray click cannot end the quiz."""
+    restore_progress(state)
     return Page(state, [panel(Header("Quit this quiz?", 2),
                               styled_button("YES, QUIT", go_home),
                               styled_button("KEEP PLAYING", question))])
@@ -442,16 +716,17 @@ def quit_game(state: State) -> Page:
 @route
 def go_home(state: State) -> Page:
     """Clear the quiz and go to the home page."""
+    restore_progress(state)
     reset_game(state, [])
-    return index(state)
+    state.fullscreen = False
+    return home_page(state)
 
 
 def missed_row(missed: Missed) -> Div:
     """Return one wrong answer: bordered flag, what was said, answer."""
     words = Div(Div(Span("You said: "), Span(colored(missed.said, RED))),
-                Div(Span("Answer: "),
-                    Span(colored(find_country(missed.code).name, GREEN))))
-    return Div(flag_image(missed.code, 80), words,
+                Div(Span("Answer: "), Span(colored(missed.name, GREEN))))
+    return Div(flag_image(find_country(missed.name).image, 80), words,
                style_display="flex", style_gap="30px",
                style_align_items="center", style_padding="10px")
 
@@ -459,36 +734,53 @@ def missed_row(missed: Missed) -> Div:
 @route
 def results(state: State) -> Page:
     """Final score page with buttons and the list of missed flags."""
+    restore_progress(state)
+    if len(state.quiz) == 0:
+        return home_page(state)
     buttons = [styled_button("HOME", go_home)]
     if len(state.missed) > 0:
         buttons.append(styled_button("STUDY MISSED", study_missed))
     buttons.append(styled_button("TRY AGAIN", try_again))
-    body = [Div(Header("Final Score", 1),
-                Header(f"{state.score}/{len(state.quiz)}", 2),
-                style_text_align="center"),
+    heading = [Header("Final Score", 1),
+               Header(f"{state.score}/{len(state.quiz)}", 2)]
+    body = [Div(*heading, style_text_align="center"),
             Div(*buttons, style_display="flex", style_gap="30px",
                 style_justify_content="center"),
             Header("Wrong answers", 3)]
     for missed in state.missed:
         body.append(missed_row(missed))
+    save_progress(state)
     return Page(state, [panel(*body)])
 
 
 # ------------------------------------------------------------- unit tests
 if assert_equal is not None:
-    _test = State([], 0, 2, 2, False, "", [], ["Asia"], 10)
-    assert_equal(pick_count(False, False, False, False), 10)
-    assert_equal(pick_count(True, True, False, False), 50)
-    assert_equal(pick_count(False, False, True, False), 100)
-    assert_equal(pick_count(False, False, False, True), 0)
-    assert_equal(collect_regions(True, False, True, False, False, False),
-                 ["Africa", "Europe"])
-    assert_equal(len(build_pool(["Oceania"])), 12)
+    _test = TestState(**asdict(new_state()))
+    assert_equal(count_available(["Oceania"], 100), False)
+    assert_equal(count_available(["Oceania"], 10), True)
+    assert_equal(count_available(["Oceania"], 0), True)
+    assert_equal(len(build_pool(["Oceania"])),
+                 len(COUNTRY_REGIONS["Oceania"]))
     assert_equal(len(build_pool([])), len(COUNTRIES))
-    assert_equal(find_country("fr").name, "France")
+    assert_equal(find_country("Zambia").image, "MAPS/Zambia.png")
+    assert_equal(find_country("Vietnam").region, "Asia")
+    assert_equal(flag_source("MAPS/missing.png"), "MAPS/missing.png")
     assert_equal(is_last_question(_test), True)
+    _test.flag_count = 100
+    _test.regions = ["Oceania"]
+    fix_count(_test)
+    assert_equal(_test.flag_count, 0)
+    _test.regions = list(REGION_NAMES)
+    assert_equal(toggle_oceania(_test, False, "4").state.regions,
+                 REGION_NAMES[:-1])
+    assert_equal(toggle_oceania(_test, False, "4").state.regions,
+                 REGION_NAMES)
+    assert_equal(set_count_10(_test, False, "4").state.flag_count,
+                 10)
+    assert_equal(set_count_all(_test, False, "4").state.flag_count,
+                 0)
     assert_equal(next_question(_test).state.position, 0)
-    assert_equal(quit_game(_test).state.score, 2)
+    assert_equal(quit_game(_test).state.score, 0)
     assert_equal(go_home(_test).state.score, 0)
 
 add_website_css("body", f"background-color: {PAGE_COLOR};")
@@ -507,4 +799,4 @@ set_site_information(
 # Debug info is left ON while testing so any error message is visible.
 # Put hide_debug_information() back before you submit.
 # hide_debug_information()
-start_server(State([], 0, 0, 0, False, "", [], list(REGION_KEYS.values()), 0))
+start_server(new_state())
