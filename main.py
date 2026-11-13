@@ -2,6 +2,7 @@
 import base64
 import random
 from dataclasses import asdict, dataclass
+from typing import Callable
 
 from drafter import *
 
@@ -328,7 +329,7 @@ def expand_button() -> Button:
                   style_height="50px")
 
 
-def styled_button(text: str, route_fn, color: str = "white") -> Button:
+def styled_button(text: str, route_fn: Callable, color: str = "white") -> Button:
     """Return a bordered, rounded button with the given background."""
     return Button(text, route_fn, style_border=BORDER,
                   style_border_radius="20px", style_background_color=color,
@@ -336,7 +337,7 @@ def styled_button(text: str, route_fn, color: str = "white") -> Button:
                   style_font_size="20px")
 
 
-def choice_button(text: str, route_fn, selected: bool,
+def choice_button(text: str, route_fn: Callable, selected: bool,
                   available: bool) -> Button:
     """Return an option button: green when selected, and grey and crossed
     out with a 'Not Available' tooltip when it cannot be chosen."""
@@ -358,7 +359,7 @@ def choice_button(text: str, route_fn, selected: bool,
     return Button(text, route_fn, **style)
 
 
-def panel(*content, **style) -> Div:
+def panel(*content: object, **style: object) -> Div:
     """Return a bordered box around the content."""
     return Div(*content, style_border=BORDER, style_padding="20px",
                style_border_radius="10px", **style)
@@ -369,7 +370,7 @@ def checkbox_row(name: str, label: str, ticked: bool) -> Div:
     return Div(CheckBox(name, ticked), Span(" " + label))
 
 
-def button_row(*buttons) -> Div:
+def button_row(*buttons: Button) -> Div:
     """Lay buttons out side by side, wrapping onto new lines."""
     return Div(*buttons, style_display="flex", style_flex_wrap="wrap",
                style_gap="8px", style_padding="6px 0px")
@@ -409,9 +410,12 @@ def options_panel(state: State, show_expand: bool) -> Div:
 
 # ------------------------------------------------------------------- pages
 def home_page(state: State) -> Page:
-    """Build the home page (title, PLAY button, options on the right)."""
+    """Build the home page with PLAY and an optional RESUME button."""
+    buttons = [styled_button("PLAY", start_game)]
+    if len(state.quiz) > 0:
+        buttons.append(styled_button("RESUME", resume_game))
     left = Div(Header("MAPPY", 1), LineBreak(), LineBreak(),
-               styled_button("PLAY", start_game), style_width="55%")
+               button_row(*buttons), style_width="55%")
     right = Div(options_panel(state, True), style_width="40%")
     save_progress(state)
     return Page(state, [panel(Div(left, right, style_display="flex",
@@ -437,10 +441,18 @@ def options_view(state: State) -> Page:
 # ------------------------------------------------------------ option routes
 @route
 def index(state: State) -> Page:
-    """Home page. If a quiz is still in progress (the page was refreshed),
-    go straight back to it instead of showing the home page."""
+    """Restore an active quiz after a refresh, otherwise show home."""
     restore_progress(state)
     state.fullscreen = False
+    if len(state.quiz) > 0:
+        return question(state)
+    return home_page(state)
+
+
+@route
+def resume_game(state: State) -> Page:
+    """Continue an unfinished quiz without changing its progress."""
+    restore_progress(state)
     if len(state.quiz) > 0:
         return question(state)
     return home_page(state)
@@ -610,7 +622,7 @@ def study_missed(state: State) -> Page:
     return question(state)
 
 
-def answer_button(state: State, text: str, route_fn) -> Button:
+def answer_button(state: State, text: str, route_fn: Callable) -> Button:
     """Make an answer button, green/red once the question is answered."""
     if not state.answered:
         return styled_button(text, route_fn)
@@ -709,8 +721,16 @@ def quit_game(state: State) -> Page:
     """Ask for confirmation so a stray click cannot end the quiz."""
     restore_progress(state)
     return Page(state, [panel(Header("Quit this quiz?", 2),
-                              styled_button("YES, QUIT", go_home),
+                              styled_button("YES, QUIT", quit_to_home),
                               styled_button("KEEP PLAYING", question))])
+
+
+@route
+def quit_to_home(state: State) -> Page:
+    """Return home while preserving the unfinished quiz for RESUME."""
+    restore_progress(state)
+    state.fullscreen = False
+    return home_page(state)
 
 
 @route
@@ -754,8 +774,26 @@ def results(state: State) -> Page:
 
 
 # ------------------------------------------------------------- unit tests
+# Each test uses TestState so save_progress does not overwrite player data.
+# Randomized routes (start_game, try_again, study_missed) are not unit tested:
+# their question order and distractor choices change on each run.
+# Their deterministic supporting helpers are tested below.
 if assert_equal is not None:
-    _test = TestState(**asdict(new_state()))
+    def test_state() -> TestState:
+        """Create an isolated state for one deterministic unit test."""
+        return TestState(**asdict(new_state()))
+
+    def test_quiz_state() -> TestState:
+        """Create a state with a predictable question for route tests."""
+        state = test_state()
+        state.quiz = [Question("Zambia", ["Zambia", "Ghana",
+                                           "Kenya", "Angola"]),
+                      Question("Ghana", ["Ghana", "Zambia",
+                                          "Kenya", "Angola"])]
+        return state
+
+    assert_equal(len(COUNTRIES), 197)
+    assert_equal(len(load_countries()), len(COUNTRIES))
     assert_equal(count_available(["Oceania"], 100), False)
     assert_equal(count_available(["Oceania"], 10), True)
     assert_equal(count_available(["Oceania"], 0), True)
@@ -765,23 +803,73 @@ if assert_equal is not None:
     assert_equal(find_country("Zambia").image, "MAPS/Zambia.png")
     assert_equal(find_country("Vietnam").region, "Asia")
     assert_equal(flag_source("MAPS/missing.png"), "MAPS/missing.png")
-    assert_equal(is_last_question(_test), True)
+    assert_equal(is_last_question(test_state()), True)
+    assert_equal(is_last_question(test_quiz_state()), False)
+    assert_equal(new_state().score, 0)
+    assert_equal(new_state().flag_count, 0)
+
+    _test = test_state()
     _test.flag_count = 100
     _test.regions = ["Oceania"]
     fix_count(_test)
     assert_equal(_test.flag_count, 0)
-    _test.regions = list(REGION_NAMES)
-    assert_equal(toggle_oceania(_test, False, "4").state.regions,
-                 REGION_NAMES[:-1])
-    assert_equal(toggle_oceania(_test, False, "4").state.regions,
-                 REGION_NAMES)
-    assert_equal(set_count_10(_test, False, "4").state.flag_count,
-                 10)
-    assert_equal(set_count_all(_test, False, "4").state.flag_count,
+    assert_equal(apply_extras(_test, True, "3"), None)
+    assert_equal(_test.num_choices, 3)
+    assert_equal(_test.hard_mode, True)
+    assert_equal(find_country("Zambia").region, "Africa")
+    assert_equal(count_available(["Oceania"], 50), False)
+
+    # Home, resume, and options routes.
+    assert_equal(index(test_state()).state.fullscreen, False)
+    assert_equal(resume_game(test_state()).state.quiz, [])
+    assert_equal(resume_game(test_quiz_state()).state.position, 0)
+    assert_equal(open_options(test_state(), False, "4").state.fullscreen,
+                 True)
+    _test = test_state()
+    _test.fullscreen = True
+    assert_equal(close_options(_test, False, "4").state.fullscreen,
+                 False)
+
+    # Every region toggle route is tested on an isolated state.
+    assert_equal("Africa" in toggle_africa(test_state(), False, "4")
+                 .state.regions, False)
+    assert_equal("Asia" in toggle_asia(test_state(), False, "4")
+                 .state.regions, False)
+    assert_equal("Europe" in toggle_europe(test_state(), False, "4")
+                 .state.regions, False)
+    assert_equal("North America" in
+                 toggle_north_america(test_state(), False, "4")
+                 .state.regions, False)
+    assert_equal("South America" in
+                 toggle_south_america(test_state(), False, "4")
+                 .state.regions, False)
+    assert_equal("Oceania" in toggle_oceania(test_state(), False, "4")
+                 .state.regions, False)
+
+    # Each flag-count route is tested separately.
+    assert_equal(set_count_all(test_state(), False, "4").state.flag_count,
                  0)
-    assert_equal(next_question(_test).state.position, 0)
-    assert_equal(quit_game(_test).state.score, 0)
-    assert_equal(go_home(_test).state.score, 0)
+    assert_equal(set_count_100(test_state(), False, "4").state.flag_count,
+                 100)
+    assert_equal(set_count_50(test_state(), False, "4").state.flag_count,
+                 50)
+    assert_equal(set_count_10(test_state(), False, "4").state.flag_count,
+                 10)
+
+    # Answer routes use a fixed quiz instead of randomized questions.
+    assert_equal(choose_0(test_quiz_state()).state.score, 1)
+    assert_equal(choose_1(test_quiz_state()).state.score, 0)
+    assert_equal(choose_2(test_quiz_state()).state.streak, 0)
+    assert_equal(len(choose_3(test_quiz_state()).state.missed), 1)
+    _test = test_quiz_state()
+    _test.answered = True
+    assert_equal(next_question(_test).state.position, 1)
+    assert_equal(next_question(test_quiz_state()).state.position, 0)
+    assert_equal(question(test_quiz_state()).state.position, 0)
+    assert_equal(quit_game(test_quiz_state()).state.score, 0)
+    assert_equal(len(quit_to_home(test_quiz_state()).state.quiz), 2)
+    assert_equal(len(go_home(test_quiz_state()).state.quiz), 0)
+    assert_equal(results(test_quiz_state()).state.position, 0)
 
 add_website_css("body", f"background-color: {PAGE_COLOR};")
 add_website_css("img", f"border: {BORDER};")
