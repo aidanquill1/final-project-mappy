@@ -23,7 +23,7 @@ except ImportError:  # unit tests are optional at runtime
 
 # ---------------------------------------------------------------- constants
 # The flag images live in the MAPS folder next to MAPPY.py (Vietnam.png, ...).
-MAPS_FOLDER = "MAPS"
+MAPS_FOLDER = "."
 REGION_NAMES = ["Africa", "Asia", "Europe", "North America", "South America",
                 "Oceania"]
 GREEN = "#2e9e4f"
@@ -177,7 +177,7 @@ def code_names() -> list[str]:
 
 
 def file_names() -> list[str]:
-    """Return PNG filenames without extensions from the MAPS folder."""
+    """Return PNG filenames without extensions from the same folder as MAPPY.py."""
     if os is None:
         return []
     here = os.path.dirname(os.path.abspath(__file__))
@@ -186,7 +186,7 @@ def file_names() -> list[str]:
         return [name[:-4] for name in os.listdir(maps_folder)
                 if name.lower().endswith(".png")]
     except OSError:
-        print("Flag check: MAPS folder is unavailable.")
+        print("Flag check: image folder is unavailable.")
         return []
 
 
@@ -199,7 +199,7 @@ def check_flags() -> None:
         here = os.path.dirname(os.path.abspath(__file__))
         maps_folder = os.path.join(here, MAPS_FOLDER)
         if not os.path.isdir(maps_folder):
-            print("Flag check skipped: MAPS folder not found.")
+            print("Flag check skipped: image folder not found.")
             return
         in_code = set(code_names())
         on_disk = set(file_names())
@@ -840,9 +840,9 @@ if assert_equal is not None:
     assert_equal(len(build_pool(["Oceania"])),
                  len(COUNTRY_REGIONS["Oceania"]))
     assert_equal(len(build_pool([])), len(COUNTRIES))
-    assert_equal(find_country("Zambia").image, "MAPS/Zambia.png")
+    assert_equal(find_country("Zambia").image, "./Zambia.png")
     assert_equal(find_country("Vietnam").region, "Asia")
-    assert_equal(flag_source("MAPS/missing.png"), "MAPS/missing.png")
+    assert_equal(flag_source("./missing.png"), "./missing.png")
     assert_equal(is_last_question(test_state()), True)
     assert_equal(is_last_question(test_quiz_state()), False)
     assert_equal(new_state().score, 0)
